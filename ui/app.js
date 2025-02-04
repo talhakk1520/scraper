@@ -141,9 +141,9 @@ async function updateVendors() {
         if (error.message.includes('connection')) {
             showText.innerText = `Database connection is unavailable`;
         } 
-        // else if (error.message.includes('database')) {
-        //     showText.innerText = `Update Inventory Vendors data not found`;
-        // }
+        else if (error.message.includes('database')) {
+            showText.innerText = `Update Inventory Vendors data not found`;
+        }
     }
 }
 

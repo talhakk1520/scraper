@@ -20,6 +20,7 @@
     "cheerio": "^1.0.0",
     "csv-writer": "^1.6.0",
     "electron-reload": "^2.0.0-alpha.1",
+    "electron-store": "^8.2.0",
     "electron-tabs": "^1.0.4",
     "keyhasher": "^1.5.1",
     "mysql2": "^3.12.0",

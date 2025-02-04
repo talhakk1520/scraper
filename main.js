@@ -4,6 +4,8 @@ const { Builder, By} = require('selenium-webdriver');
 const chrome = require('selenium-webdriver/chrome');
 const firefox = require('selenium-webdriver/firefox');
 const { encrypt, hash} = require('keyhasher');
+const Store = require('electron-store');
+const store = new Store();
 const axios = require('axios');
 const path = require('path');
 const cheerio = require('cheerio');
@@ -31,6 +33,9 @@ async function createWindow() {
         }
     });
     win.loadFile(path.join(__dirname, 'index.html'));
+    global.isLoggedIn = store.get('isLoggedIn') ?? false;
+    global.userName = store.get('Name') ?? null;
+    global.user_name = store.get('Username') ?? null;
     win.webContents.on('did-finish-load', () => {
         const isLoggedIn = global.isLoggedIn ?? false;
         win.webContents.send('set-default-tab', isLoggedIn);
@@ -53,6 +58,9 @@ ipcMain.handle('perform-login', async (event, { username, password }) => {
         if(result.length > 0){
             global.userName = result[0][0].name;
             global.user_name = result[0][0].username;
+            store.set('Name', global.userName);
+            store.set('Username', global.user_name);
+            store.set('isLoggedIn', true);
             new Notification({
                 title: `${global.userName}`,
                 body: `Login successfully`,
@@ -81,9 +89,6 @@ ipcMain.handle('getVendors', async () => {
         const connection = await getConnection();
         const [vendors] = await connection.query(`CALL GetVendorsByUsername(?)`,[global.user_name]);
         
-        if (vendors == null || vendors.length === 0) {
-            throw new Error('database: Vendor data not found.');
-        }
         return vendors;
     } catch (error) {
         console.log(error);
@@ -122,10 +127,13 @@ let startTime;
 let endTime;
 let totalRuntime;
 
+let updated_by;
+
 // -------  Performing Login and After Login Process  ------- //
 
 ipcMain.handle('loginAndPost', async (event, vendorId, is_update) => {
     let driver;
+    updated_by = global.userName;
     startTime = Date.now();
     try {
         const conn = await getConnection();
@@ -343,6 +351,7 @@ async function processAnita(driver, vendor_name, is_update) {
                                         collectedData.push({
                                             vendor_name,
                                             product_name,
+                                            updated_by,
                                             is_update,
                                             stylecode: product.stylecode,
                                             colorcode,
@@ -494,8 +503,8 @@ async function processwp(driver, conn, vendor_name, is_update) {
                             // );
     
                             if(is_update == 1){
-                                const result = await conn.query('CALL sp_updateWPData(?, ?, ?, ?, ?, ?)',
-                                    [quantity, price, product.stylecode, colorCode, color, size]
+                                const result = await conn.query('CALL sp_updateWPData(?, ?, ?, ?, ?, ?, ?)',
+                                    [quantity, price, product.stylecode, colorCode, color, size, updated_by]
                                 );
                                 if(result.affectedRows == 1){
                                     countProduct++;
@@ -643,8 +652,8 @@ async function processRows(driver, color, product, conn, vendor_name, is_update)
 
         try {     
             if(is_update == 1){
-                const result = await conn.query('CALL sp_UpdateFOTLData(?, ?, ?)',
-                    [quantity, price, upc]
+                const result = await conn.query('CALL sp_UpdateFOTLData(?, ?, ?, ?)',
+                    [quantity, price, upc, updated_by]
                 );
                 if(result.affectedRows == 1){
                     countProduct++;
@@ -710,6 +719,9 @@ ipcMain.handle('request-set-default-tab', (event, isLoggedIn) => {
 
 ipcMain.on('request-logout', (event, url) => {
     global.isLoggedIn = false;
+    store.delete('isLoggedIn');
+    store.delete('Name');
+    store.delete('Username');
     new Notification({
         title: `${global.userName}`,
         body: `Logout successfully`,
