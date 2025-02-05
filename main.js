@@ -1,12 +1,10 @@
 const { app, BrowserWindow, session, ipcMain, Notification } = require('electron');
 const  { getConnection, getPoolConnection } = require('./database');
 const { Builder, By} = require('selenium-webdriver');
-const chrome = require('selenium-webdriver/chrome');
 const firefox = require('selenium-webdriver/firefox');
 const { encrypt, hash} = require('keyhasher');
 const Store = require('electron-store');
 const store = new Store();
-const axios = require('axios');
 const path = require('path');
 const cheerio = require('cheerio');
 require('electron-reload')(__dirname);
@@ -146,7 +144,6 @@ ipcMain.handle('loginAndPost', async (event, vendorId, is_update) => {
         const { vendor_name, link, email, password, is_type_vpn, is_label, not_type_submit} = vendorDetails[0];   
 
         const options = new firefox.Options();
-        // options.addArguments('--headless', '--disable-gpu', '--window-size=1920,1080');
         // options.addArguments('--headless');
 
         driver = await new Builder()
@@ -423,6 +420,8 @@ async function processAnita(driver, vendor_name, is_update) {
         }
     }
 }
+
+// BULK INSERT
 
 const bulkInsert = async (data, batchSize = 1000, query) => {
     try {
