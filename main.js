@@ -143,7 +143,7 @@ ipcMain.handle('loginAndPost', async (event, vendorId, is_update) => {
             throw new Error('database: Vendor data not found.');
         }
 
-        const { vendor_name, link, email, password, is_label, not_type_submit} = vendorDetails[0];   
+        const { vendor_name, link, email, password, is_type_vpn, is_label, not_type_submit} = vendorDetails[0];   
 
         const options = new firefox.Options();
         // options.addArguments('--headless', '--disable-gpu', '--window-size=1920,1080');
@@ -182,6 +182,11 @@ ipcMain.handle('loginAndPost', async (event, vendorId, is_update) => {
                 await driver.findElement(By.id('loginBtn')).click();
                 await driver.sleep(3000);
 
+            } else if (is_type_vpn == 1){
+                await driver.findElement(By.xpath("//input[@type='email']")).sendKeys(email);
+                await driver.findElement(By.xpath("//input[@type='password']")).sendKeys(password);
+                await driver.findElement(By.css(".btn.btn-default.pull-right")).click();
+                await driver.sleep(3000);
             } else {
 
                 await driver.findElement(By.id("username")).sendKeys(email);
@@ -191,6 +196,7 @@ ipcMain.handle('loginAndPost', async (event, vendorId, is_update) => {
 
             }
         } catch (e) {
+            console.log(e);
             throw new Error('captcha: Login failed due to CAPTCHA or missing form element.');
         }
 
@@ -218,7 +224,17 @@ ipcMain.handle('loginAndPost', async (event, vendorId, is_update) => {
             } catch (error) {
                 throw error;
             }
-        } else{
+
+        } else if (is_type_vpn == 1) {
+
+            await driver.sleep(2000);
+            try {
+                await processProClub(driver, conn, vendor_name, is_update);
+            } catch (error) {
+                throw error;    
+            }
+
+        } else {
 
             await driver.sleep(10000);
 
@@ -530,6 +546,107 @@ async function processwp(driver, conn, vendor_name, is_update) {
             throw new Error(`service: ${countProduct} products updated in the database,total time taken ${runtimeInMinutes} minutes.`);
         }
     }
+}
+
+// PRO CLUB
+
+async function processProClub(driver, conn, vendor_name, is_update) {
+    let productCollect = [];
+    const categories = [
+        'https://www.proclubinc.com/mens/?limit=100',
+        'https://www.proclubinc.com/womens/',
+        'https://www.proclubinc.com/youth/',
+        'https://www.proclubinc.com/accessories/'
+    ];
+
+    for (let category of categories) {
+        try {
+            await driver.get(category);
+            await driver.sleep(2000);
+            const productElements = await driver.findElements(By.css('.shop-item-summary'));
+            for (let product of productElements) {
+                const productName = await product.findElement(By.css('a')).getText();
+                const productUrl = await product.findElement(By.css('a')).getAttribute('href');
+                productCollect.push({
+                    productName: productName,
+                    productUrl: productUrl,
+                });
+            }
+            
+        } catch (error) {
+            console.log(error);
+            endTime = Date.now();
+            totalRuntime = endTime - startTime;
+            runtimeInMinutes = (totalRuntime / (1000 * 60)).toFixed(2);
+            if (is_update == 1) {
+                throw new Error(`service: ${countProduct} products updated in the database,total time taken ${runtimeInMinutes} minutes.`);
+            } else {
+                throw new Error(`service: ${countProduct} products added to the database,total time taken ${runtimeInMinutes} minutes.`);
+            }
+        }
+    }
+    console.log(`Total Products link: ${productCollect.length}`);
+
+    const productChunks = splitArrayIntoChunks(productCollect, 40);
+    let collectedData2 = [];
+
+    for (let chunkIndex = 0; chunkIndex < productChunks.length; chunkIndex++) {
+        const productChunk = productChunks[chunkIndex];
+
+        for(let product of productChunk){
+            try {
+                await driver.get(product.productUrl);
+                await driver.sleep(2000);
+                const htmlContent = await driver.getPageSource();
+                const $ = cheerio.load(htmlContent);
+
+                const style_code = $('.clearfix #div_product_itemno').text();
+
+                $('table').eq(0).find('tr:not(:eq(0))').each(function () {
+                    let colorname = $(this).find('.font-dark ').eq(1).text();
+        
+                    $(this).find('table').eq(0).find('tr').find('td').each(function () {
+                        let price = $(this).find('.txt-default').html();
+                        price = parseFloat(price.replace('$', ''));
+                        let size = $(this).find('.MainQty').attr('placeholder');
+                        let qty = $(this).find('span').html();
+                        if (qty.includes('500+')) {
+                            qty = 500;
+                        } else if (qty == ''){
+                            qty = 0;
+                        }
+        
+                        collectedData2.push({
+                            product_name: product.productName,
+                            style_code: style_code,
+                            color: colorname,
+                            size: size,
+                            quantity: parseInt(qty),
+                            price: price,
+                            updated_by: updated_by,
+                        });
+                    });
+                });
+            } catch (error) {
+                console.log(error);
+                console.log(`Error in Product Url: ${product.productUrl}`);
+                console.log(`Error while processing chunk ${chunkIndex + 1}: ${error.message}`);
+                endTime = Date.now();
+                totalRuntime = endTime - startTime;
+                runtimeInMinutes = (totalRuntime / (1000 * 60)).toFixed(2);
+                if (is_update == 1) {
+                    throw new Error(`service: ${countProduct} products updated in the database,total time taken ${runtimeInMinutes} minutes.`);
+                } else {
+                    throw new Error(`service: ${countProduct} products added to the database,total time taken ${runtimeInMinutes} minutes.`);
+                }
+            }
+        }
+        console.log(`Processing chunk ${chunkIndex + 1} of ${productChunks.length}...`);
+        console.log(`Finished processing chunk ${chunkIndex + 1} of ${productChunks.length}.`);
+        await driver.sleep(10000);
+    }
+    console.log(collectedData2.length);
+    
 }
 
 
