@@ -229,7 +229,7 @@ ipcMain.handle('loginAndPost', async (event, vendorId, is_update) => {
 
             await driver.sleep(2000);
             try {
-                await processProClub(driver, conn, vendor_name, is_update);
+                await processProClub(driver, is_update);
             } catch (error) {
                 throw error;    
             }
@@ -390,6 +390,8 @@ async function processAnita(driver, vendor_name, is_update) {
                         console.log(error);
                     }
                     
+                    const query = `CALL sp_BatchInsertOrUpdateAnitaData(?)`;
+                    await bulkInsert(collectedData, 2000, query);
                 } catch (error) {
                     console.log(error);
                     console.log(`Error in Product Url: ${product.url}`);
@@ -403,7 +405,6 @@ async function processAnita(driver, vendor_name, is_update) {
                         throw new Error(`service: ${countProduct} products added to the database,total time taken ${runtimeInMinutes} minutes.`);
                     }
                 }
-                await bulkInsert(collectedData, 2000);
             }
             console.log(`Finished processing chunk ${chunkIndex + 1} of ${productChunks.length}.`);
             await driver.sleep(2000);
@@ -423,16 +424,13 @@ async function processAnita(driver, vendor_name, is_update) {
     }
 }
 
-const bulkInsert = async (data, batchSize = 1000) => {
+const bulkInsert = async (data, batchSize = 1000, query) => {
     try {
         const chunks = splitArrayIntoChunks(data, batchSize);
         // const pool = await getPoolConnection();
 
         for (const [index, chunk] of chunks.entries()) {
             const jsonData = JSON.stringify(chunk);
-
-            const query = `CALL sp_BatchInsertOrUpdateAnitaData(?)`;
-
             try {
                 const conn = await getConnection();
                 const result = await conn.query(query, [jsonData]);
@@ -550,7 +548,7 @@ async function processwp(driver, conn, vendor_name, is_update) {
 
 // PRO CLUB
 
-async function processProClub(driver, conn, vendor_name, is_update) {
+async function processProClub(driver, is_update) {
     let productCollect = [];
     const categories = [
         'https://www.proclubinc.com/mens/?limit=100',
@@ -588,12 +586,13 @@ async function processProClub(driver, conn, vendor_name, is_update) {
     console.log(`Total Products link: ${productCollect.length}`);
 
     const productChunks = splitArrayIntoChunks(productCollect, 40);
-    let collectedData2 = [];
 
     for (let chunkIndex = 0; chunkIndex < productChunks.length; chunkIndex++) {
+        console.log(`Processing chunk ${chunkIndex + 1} of ${productChunks.length}...`);
         const productChunk = productChunks[chunkIndex];
 
         for(let product of productChunk){
+            let collectedData2 = [];
             try {
                 await driver.get(product.productUrl);
                 await driver.sleep(2000);
@@ -606,27 +605,34 @@ async function processProClub(driver, conn, vendor_name, is_update) {
                     let colorname = $(this).find('.font-dark ').eq(1).text();
         
                     $(this).find('table').eq(0).find('tr').find('td').each(function () {
-                        let price = $(this).find('.txt-default').html();
-                        price = parseFloat(price.replace('$', ''));
-                        let size = $(this).find('.MainQty').attr('placeholder');
-                        let qty = $(this).find('span').html();
-                        if (qty.includes('500+')) {
-                            qty = 500;
-                        } else if (qty == ''){
-                            qty = 0;
+                        let currentData = $(this).html();
+                        if(currentData.includes('&nbsp;')){
+                            return;
+                        } else {
+                            let price = $(this).find('.txt-default').html();
+                            price = parseFloat(price.replace('$', ''));
+                            let size = $(this).find('.MainQty').attr('placeholder');
+                            let qty = $(this).find('span').html();
+                            if (qty.includes('500+')) {
+                                qty = 500;
+                            } else if (qty == ''){
+                                qty = 0;
+                            }
+            
+                            collectedData2.push({
+                                product_name: product.productName,
+                                style_code: style_code,
+                                color: colorname,
+                                size: size,
+                                quantity: parseInt(qty),
+                                price: price,
+                                updated_by: updated_by,
+                            });
                         }
-        
-                        collectedData2.push({
-                            product_name: product.productName,
-                            style_code: style_code,
-                            color: colorname,
-                            size: size,
-                            quantity: parseInt(qty),
-                            price: price,
-                            updated_by: updated_by,
-                        });
                     });
                 });
+                const query = `CALL sp_BatchUpdateProClubData(?)`;
+                await bulkInsert(collectedData2, 2000, query);
             } catch (error) {
                 console.log(error);
                 console.log(`Error in Product Url: ${product.productUrl}`);
@@ -641,12 +647,9 @@ async function processProClub(driver, conn, vendor_name, is_update) {
                 }
             }
         }
-        console.log(`Processing chunk ${chunkIndex + 1} of ${productChunks.length}...`);
         console.log(`Finished processing chunk ${chunkIndex + 1} of ${productChunks.length}.`);
         await driver.sleep(10000);
-    }
-    console.log(collectedData2.length);
-    
+    }    
 }
 
 
