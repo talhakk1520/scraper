@@ -539,9 +539,7 @@ async function processwp(driver, conn, vendor_name, is_update) {
         endTime = Date.now();
         totalRuntime = endTime - startTime;
         runtimeInMinutes = (totalRuntime / (1000 * 60)).toFixed(2);
-        if (is_update == 1) {
-            throw new Error(`service: ${countProduct} products updated in the database,total time taken ${runtimeInMinutes} minutes.`);
-        }
+        throw new Error(`service: ${countProduct} products updated in the database,total time taken ${runtimeInMinutes} minutes.`);
     }
 }
 
@@ -575,11 +573,7 @@ async function processProClub(driver, is_update) {
             endTime = Date.now();
             totalRuntime = endTime - startTime;
             runtimeInMinutes = (totalRuntime / (1000 * 60)).toFixed(2);
-            if (is_update == 1) {
-                throw new Error(`service: ${countProduct} products updated in the database,total time taken ${runtimeInMinutes} minutes.`);
-            } else {
-                throw new Error(`service: ${countProduct} products added to the database,total time taken ${runtimeInMinutes} minutes.`);
-            }
+            throw new Error(`service: ${countProduct} products updated in the database,total time taken ${runtimeInMinutes} minutes.`);
         }
     }
     console.log(`Total Products link: ${productCollect.length}`);
@@ -639,11 +633,7 @@ async function processProClub(driver, is_update) {
                 endTime = Date.now();
                 totalRuntime = endTime - startTime;
                 runtimeInMinutes = (totalRuntime / (1000 * 60)).toFixed(2);
-                if (is_update == 1) {
-                    throw new Error(`service: ${countProduct} products updated in the database,total time taken ${runtimeInMinutes} minutes.`);
-                } else {
-                    throw new Error(`service: ${countProduct} products added to the database,total time taken ${runtimeInMinutes} minutes.`);
-                }
+                throw new Error(`service: ${countProduct} products updated in the database,total time taken ${runtimeInMinutes} minutes.`);
             }
         }
         console.log(`Finished processing chunk ${chunkIndex + 1} of ${productChunks.length}.`);
