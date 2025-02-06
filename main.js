@@ -747,17 +747,21 @@ function splitArrayIntoChunks(array, chunkSize) {
 }
 
 
-// PROCESS ROW OF ANITA
+// PROCESS ROW OF FRUIT OF THE LOOM
 
 async function processRows(driver, color, product, conn, vendor_name, is_update) {
     const rows = await driver.findElements(By.xpath("//div[contains(@class, 'row')][div[contains(@class, 'col-xs-3')]/span[contains(@class, 'pdp-grid-span')]]"));
 
     for (let row of rows) {
-        const size = await row.findElement(By.xpath("./div[1][contains(@class, 'col-xs-2')]/span[contains(@class, 'pdp-grid-span')]")).getText();
-        const upc = await row.findElement(By.xpath("./div[contains(@class, 'col-xs-3')]/span[contains(@class, 'pdp-grid-span')]")).getText();
-        const quantity = await row.findElement(By.xpath("./div[contains(@class, 'col-xs-4')]/span[contains(@class, 'pdp-grid-qty')]")).getText();
-        const priceRaw = await row.findElement(By.xpath("./div[last()-1][contains(@class, 'col-xs-2')]/span[contains(@class, 'pdp-grid-span')]")).getText();
-        const price = parseFloat(priceRaw.replace("$", ""));
+        const htmlContent = await row.getAttribute('outerHTML');
+        const $ = cheerio.load(htmlContent);
+
+        const size = $("div.col-xs-2.pdp-grid-col > span.pdp-grid-span").first().text().trim();
+        const upc = $("div.col-xs-3.pdp-grid-col > span.pdp-grid-span").text().trim();
+        const price = parseFloat(
+            $("div.col-xs-2.pdp-grid-col > span.pdp-grid-span").last().text().replace("$", "").trim()
+        );
+        const quantity = $("div.col-xs-4.pdp-grid-col > span.pdp-grid-qty").first().text().trim();
 
         try {     
             if(is_update == 1){
