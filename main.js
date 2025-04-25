@@ -1,8 +1,9 @@
 const { app, BrowserWindow, session, ipcMain, Notification } = require('electron');
-const  { getConnection, getPoolConnection } = require('./database');
+const  { getConnection1, sql, getConnection2 } = require('./database');
 const { Builder, By} = require('selenium-webdriver');
 const firefox = require('selenium-webdriver/firefox');
-const { encrypt, hash} = require('keyhasher');
+const createCsvWriter = require('csv-writer').createObjectCsvWriter;
+const ftp = require('basic-ftp');
 const Store = require('electron-store');
 const store = new Store();
 const path = require('path');
@@ -47,15 +48,16 @@ async function createWindow() {
 
 ipcMain.handle('perform-login', async (event, { username, password }) => {
     try {
-        const passCode = '572';
-        const passEncrypt = encrypt(password, passCode);
-        const hashedPass = hash(passEncrypt);
-        const connection = await getConnection();
-        const result = await connection.query(`CALL GetVendorUserLogin(? COLLATE utf8_unicode_ci, ? COLLATE utf8_unicode_ci)`,[username, hashedPass]);
+        const conn = await getConnection1();
+        const result = await conn.request()
+            .input('P_LoginName', sql.VarChar(50), username)
+            .input('P_Password', sql.VarChar(500), password)
+            .execute('scrapper_login');
         
-        if(result.length > 0){
-            global.userName = result[0][0].name;
-            global.user_name = result[0][0].username;
+        if(result.recordset.length > 0){
+            const user = result.recordset[0];
+            global.userName = user.FullName;
+            global.user_name = user.username;
             store.set('Name', global.userName);
             store.set('Username', global.user_name);
             store.set('isLoggedIn', true);
@@ -84,9 +86,7 @@ ipcMain.handle('get-user-name', async () => {
 
 ipcMain.handle('getVendors', async () => {
     try {
-        const connection = await getConnection();
-        const [vendors] = await connection.query(`CALL GetVendorsByUsername(?)`,[global.user_name]);
-        
+        const vendors = '';
         return vendors;
     } catch (error) {
         console.log(error);
@@ -101,18 +101,25 @@ ipcMain.handle('getVendors', async () => {
 
 ipcMain.handle('getUpdateVendors', async () => {
     try {
-        const connection = await getConnection();
-        const [vendors] = await connection.query(`CALL GetVendorsIsUpdateByUsername(?)`,[global.user_name]);
+        const conn = await getConnection1();
+        const result = await conn.request()
+                        .input('P_LoginName', sql.VarChar(50), global.user_name)
+                        .execute('GetVendorsIsUpdateByUsername');
+        const vendors = result.recordset;
         if (vendors == null || vendors.length === 0) {
             throw new Error('database: Vendor data not found.');
         }
         return vendors;
     } catch (error) {
         console.log(error);
+        console.log(error.message);
         if (error.message.includes('database')) {
             throw error;
         }
         if (error.message.includes('connection')) {
+            throw error;
+        }
+        if (error.message.includes('Failed to connect')){
             throw error;
         }
     }
@@ -134,14 +141,17 @@ ipcMain.handle('loginAndPost', async (event, vendorId, is_update) => {
     updated_by = global.userName;
     startTime = Date.now();
     try {
-        const conn = await getConnection();
-        const [vendorDetails] = await conn.query(`CALL GetVendorById(?)`, [vendorId]);
-
+        const conn = await getConnection1();
+        const result = await conn.request()
+                        .input('vendor_id', sql.Int, vendorId)
+                        .execute('GetVendorById');
+        const vendorDetails = result.recordset;
+        
         if (!vendorDetails || vendorDetails.length === 0) {
             throw new Error('database: Vendor data not found.');
         }
 
-        const { vendor_name, link, email, password, is_type_vpn, is_label, not_type_submit} = vendorDetails[0];   
+        const { vendor_name, link, email, password, is_type_vpn, is_label, not_type_submit} = vendorDetails[0];  
 
         const options = new firefox.Options();
         // options.addArguments('--headless');
@@ -169,7 +179,7 @@ ipcMain.handle('loginAndPost', async (event, vendorId, is_update) => {
 
                 await driver.findElement(By.xpath("//input[(@type='email' or @type='text') and following::input[@type='password']]")).sendKeys(email);
                 await driver.findElement(By.xpath("//input[@type='password']")).sendKeys(password);
-                await driver.findElement(By.css('.custom-control-label')).click();
+                await driver.findElement(By.css('.form-check-input')).click();
                 await driver.findElement(By.xpath("//button[@type='submit']")).click();
 
             } else if (not_type_submit == 1) {
@@ -237,7 +247,6 @@ ipcMain.handle('loginAndPost', async (event, vendorId, is_update) => {
 
             try {
                 await processLoom(driver, conn, vendor_name, is_update);
-                console.log("All chunks processed successfully.");
             } catch (error) {
                 if (error.message.includes('service')) {
                     throw error;
@@ -287,51 +296,50 @@ ipcMain.handle('loginAndPost', async (event, vendorId, is_update) => {
 async function processAnita(driver, vendor_name, is_update) {
     let mainArray = [];
     try {
-        const rows = await driver.findElements(By.css('.table tbody'));
-        for (let row of rows) {
-            const linkElement = await row.findElement(By.css('td a'));
-            const link = await linkElement.getAttribute('href');
-            const STYLECODE = (await linkElement.getText()).trim();
+        const links = await driver.findElements(By.css('tr > td:first-child > a'));
+
+        for (const link of links) {
+            const url = await link.getAttribute('href');
+            const articleElement = await link.findElement(By.css('.shop-articles-article-number'));
+            const stylecode = await articleElement.getText();
 
             mainArray.push({
-                url: `${link}`,
-                stylecode: STYLECODE,
+                url: `${url}`,
+                stylecode: stylecode,
             });
         }
-        mainArray.shift();
 
         const productChunks = splitArrayIntoChunks(mainArray, 150);
+        const anitaData = [];
         
         for (let chunkIndex = 0; chunkIndex < productChunks.length; chunkIndex++) {
             const productChunk = productChunks[chunkIndex];
             console.log(`Processing chunk ${chunkIndex + 1} of ${productChunks.length}...`);
             
             for (let product of productChunk) {
-                const collectedData = [];
                 try {
                     await driver.get(product.url);
                     await driver.sleep(500);
-                    const product_name = await driver.findElement(By.css('h2.text-primary')).getText();
-                    // console.log(product_name);
 
                     const htmlContent = await driver.getPageSource();
                     const $ = cheerio.load(htmlContent); 
                     try {
                         
                         $('.table-responsive').each(async (z, div) => {
-                            const sizeElements = $(div).find('.table-striped thead tr th:not(:first-child):not(:last-child)');
-                            const colorHeading = $(div).closest('.change-cart-form').find('h4');
+                            const sizeElements = $(div).find('.shop-article-table thead tr th:not(:first-child):not(:last-child)');
+                            const colorHeading = $('button.accordion-button');
                             const COLORNAME = colorHeading.map((_, ch) => $(ch).text().trim()).get();
     
-                            $(div).find('.table-striped tr:not(.collapse-mglt)').each(async (_, row) => {
+                            $(div).find('.shop-article-table tr:not(.collapse-mglt)').each(async (_, row) => {
                                 const th = $(row).find('th').text().trim();
                                 const breaking = COLORNAME[z].split(/(?<=^\S+)\s/);
                                 const colorcode = breaking[0];
                                 const color = breaking[1];
                                 let price = $(row).find('td .ekp').text().trim();
-                                price = price.split(' ')[0]
+                                price = price.split(' ')[0];
                                 let map = $(row).find('td .vkp').text().trim();
-                                map = map.split(' ')[0]
+                                let mapFloat = parseFloat(map.split(' ')[0]);
+                                map = isNaN(mapFloat) ? "0.00" : mapFloat.toFixed(2);
                                 const cells = $(row).find('td:not(:last-child)');
     
                                 cells.each(async (index, cell) => {
@@ -343,38 +351,32 @@ async function processAnita(driver, vendor_name, is_update) {
                                     if( checkStockAvailable == '&nbsp;'){
                                         inventory = '0';
                                     } else {
-                                        const divContent2 = $(cell).find('input').data('content');
-    
-                                        if (divContent2 != undefined) {
-                                            if (divContent2 && divContent2.includes('stock')) {
-                                                const [inventoryValue, dateValue] = divContent2.replace('stock: ', '').split(' ');
-                                                inventory = inventoryValue;
-                                                date = dateValue;
-                                            }
+                                        const divContent2 = $(cell).find('input');
+                                        inventory = divContent2.data('in-stock');
+                                        if (inventory == '-1'){
+                                            inventory = '0';
+                                            date = '0';
                                         } else {
-                                            inventory = '5';
-                                        }
+                                            date = divContent2.data('note');
+                                        } 
                                     }
     
                                     const cup_size = th ?? '';
 
                                     if(price === ''){
-                                        console.log('price is 0.00');
+                                        // console.log('price is 0.00');
                                     }else{
-                                        collectedData.push({
-                                            vendor_name,
-                                            product_name,
-                                            updated_by,
-                                            is_update,
-                                            stylecode: product.stylecode,
-                                            colorcode,
-                                            color,
-                                            actualSize,
-                                            cup_size,
-                                            inventory,
-                                            price,
-                                            map,
-                                            date,
+                                        anitaData.push({
+                                            'inventory': inventory,
+                                            'date': date,
+                                            'cupsize': cup_size,
+                                            'price': price,
+                                            'size': actualSize,
+                                            'colorcode': colorcode,
+                                            'color_name': color,
+                                            'COLORNAME': colorcode + ' ' + color,
+                                            'stylecode': product.stylecode,
+                                            'map': map,
                                         });
                                     }
     
@@ -386,9 +388,6 @@ async function processAnita(driver, vendor_name, is_update) {
                     } catch (error) {
                         console.log(error);
                     }
-                    
-                    const query = `CALL sp_BatchInsertOrUpdateAnitaData(?)`;
-                    await bulkInsert(collectedData, 2000, query);
                 } catch (error) {
                     console.log(error);
                     console.log(`Error in Product Url: ${product.url}`);
@@ -397,9 +396,9 @@ async function processAnita(driver, vendor_name, is_update) {
                     totalRuntime = endTime - startTime;
                     runtimeInMinutes = (totalRuntime / (1000 * 60)).toFixed(2);
                     if (is_update == 1) {
-                        throw new Error(`service: ${countProduct} products updated in the database,total time taken ${runtimeInMinutes} minutes.`);
+                        throw new Error(`service: total time taken ${runtimeInMinutes} minutes.`);
                     } else {
-                        throw new Error(`service: ${countProduct} products added to the database,total time taken ${runtimeInMinutes} minutes.`);
+                        throw new Error(`service: total time taken ${runtimeInMinutes} minutes.`);
                     }
                 }
             }
@@ -407,6 +406,24 @@ async function processAnita(driver, vendor_name, is_update) {
             await driver.sleep(2000);
         }
 
+        countProduct = anitaData.length;
+
+        await writeAnitaDataToCSV(anitaData, 'anitaInventory.csv');
+
+        const conn = await getConnection2();
+        const result = await conn.request()
+                        .execute('stp_app_anita_inv_grabber');
+        // console.log(result);
+
+        endTime = Date.now();
+        totalRuntime = endTime - startTime;
+        runtimeInMinutes = (totalRuntime / (1000 * 60)).toFixed(2);
+
+        new Notification({
+            title: 'Anita',
+            body: `${countProduct} products updated in the database,total time taken ${runtimeInMinutes} minutes.`,
+        }).show();
+        
         
     } catch (error) {
         console.error(error);
@@ -414,37 +431,35 @@ async function processAnita(driver, vendor_name, is_update) {
         totalRuntime = endTime - startTime;
         runtimeInMinutes = (totalRuntime / (1000 * 60)).toFixed(2);
         if (is_update == 1) {
-            throw new Error(`service: ${countProduct} products updated in the database,total time taken ${runtimeInMinutes} minutes.`);
+            throw new Error(`service: total time taken ${runtimeInMinutes} minutes.`);
         } else {
-            throw new Error(`service: ${countProduct} products added to the database,total time taken ${runtimeInMinutes} minutes.`);
+            throw new Error(`service: total time taken ${runtimeInMinutes} minutes.`);
         }
     }
 }
 
-// BULK INSERT
+async function writeAnitaDataToCSV(data, filename) {
+    const csvWriter = createCsvWriter({
+        path: filename,
+        alwaysQuote :true,
+        recordDelimiter: '\r\n',
+        header: [
+            { id: 'inventory', title: 'Inventory' },
+            { id: 'date', title: 'Date' },
+            { id: 'cupsize', title: 'Cup Size' },
+            { id: 'price', title: 'Price' },
+            { id: 'size', title: 'Size' },
+            { id: 'colorcode', title: 'Color Code' },
+            { id: 'color_name', title: 'Color Name' },
+            { id: 'COLORNAME', title: 'Color Name Code' },
+            { id: 'stylecode', title: 'Style Code'},
+            { id: 'map', title: 'Map'},
+        ],
+    });
 
-const bulkInsert = async (data, batchSize = 1000, query) => {
-    try {
-        const chunks = splitArrayIntoChunks(data, batchSize);
-        // const pool = await getPoolConnection();
-
-        for (const [index, chunk] of chunks.entries()) {
-            const jsonData = JSON.stringify(chunk);
-            try {
-                const conn = await getConnection();
-                const result = await conn.query(query, [jsonData]);
-                // const result = await pool.query(query, [jsonData]);
-                countProduct += result.affectedRows;
-                console.log(`Batch ${index + 1} inserted/updated successfully`);
-            } catch (error) {
-                console.error(`Error processing batch ${index + 1}:`, error);
-            }
-        }
-
-    } catch (error) {
-        console.error('Error in bulk insert/update:', error);
-    }
-};
+    await csvWriter.writeRecords(data);
+    await uploadToFTP(filename);
+}
 
 
 // Whispering Pines Sportswear
@@ -452,12 +467,15 @@ const bulkInsert = async (data, batchSize = 1000, query) => {
 async function processwp(driver, conn, vendor_name, is_update) {
     let productCollect = [];
     try {
-        const stylecodes = await conn.query('SELECT DISTINCT(style) FROM vendor_data WHERE vendor_name = ?', [vendor_name]);
+        const connection = await getConnection2();
+        const result = await connection.request()
+                        .execute('stp_Whispering_stylecodes');
+        const stylecodes = result.recordset;
         for(let sc of stylecodes){
-            const link = `https://www.wpsportswear.com/product/${sc.style}/`;
+            const link = `https://www.wpsportswear.com/product/${sc.stylecode}/`;
             productCollect.push({
                 url: link,
-                stylecode: sc.style,
+                stylecode: sc.stylecode,
             });
         }
     
@@ -467,6 +485,7 @@ async function processwp(driver, conn, vendor_name, is_update) {
         await driver.findElement(By.css('#gridMode option[value="whse"]')).click();
     
         const productChunks = splitArrayIntoChunks(productCollect, 50);
+        const wpData = [];
     
         for (let chunkIndex = 0; chunkIndex < productChunks.length; chunkIndex++) {
             const productChunk = productChunks[chunkIndex];
@@ -476,8 +495,6 @@ async function processwp(driver, conn, vendor_name, is_update) {
                 try {
                     await driver.get(product.url);
                     await driver.sleep(8000);
-                    // const product_name = await conn.query('SELECT product_name FROM vendor_data WHERE style = ? AND vendor_name = ? GROUP BY product_name', [product.stylecode, vendor_name]);
-                    // await conn.query('DELETE FROM vendor_data WHERE style = ? AND vendor_name = ?', [product.stylecode, vendor_name]);
                     
                     // const product_name = await driver.findElement(By.css('.styleDescDiv span')).getText();
                     const allColorsDiv = await driver.findElements(By.css('.product-item'));
@@ -511,18 +528,14 @@ async function processwp(driver, conn, vendor_name, is_update) {
                             const priceRaw = await sizeDiv.findElement(By.css('.product-price')).getText();
                             const price = parseFloat(priceRaw.replace("$", ""));
 
-                            // await conn.query('INSERT INTO vendor_data(vendor_name, product_name, style, color_code, color, size, quantity, cost) VALUES(?, ?, ?, ?, ?, ?, ?, ?)',
-                            //     [vendor_name, product_name[0].product_name, product.stylecode, colorCode, color, size, quantity, price]
-                            // );
-    
-                            if(is_update == 1){
-                                const result = await conn.query('CALL sp_updateWPData(?, ?, ?, ?, ?, ?, ?)',
-                                    [quantity, price, product.stylecode, colorCode, color, size, updated_by]
-                                );
-                                if(result.affectedRows == 1){
-                                    countProduct++;
-                                }
-                            }
+                            wpData.push({
+                                stylecode: product.stylecode,
+                                color_name: color,
+                                colorcode: colorCode,
+                                size: size,
+                                inventory: quantity,
+                                price: price,
+                            })
                         }
                     }
                 } catch (error) {
@@ -534,111 +547,207 @@ async function processwp(driver, conn, vendor_name, is_update) {
             console.log(`Finished processing chunk ${chunkIndex + 1} of ${productChunks.length}.`);
             await driver.sleep(2000);
         }
+
+        countProduct = wpData.length;
+
+        await writewpDataToCSV(wpData, 'whisperingpinesInventory.csv');
+
+        const conn2 = await getConnection2();
+        const result2 = await conn2.request()
+                        .execute('stp_whispering_inventory_grabber');
+        // console.log(result2);
+
+        endTime = Date.now();
+        totalRuntime = endTime - startTime;
+        runtimeInMinutes = (totalRuntime / (1000 * 60)).toFixed(2);
+    
+        new Notification({
+            title: 'Whispering Pines',
+            body: `${countProduct} products updated in the database,total time taken ${runtimeInMinutes} minutes.`,
+        }).show();
+
     } catch (error) {
         console.log(error);
         endTime = Date.now();
         totalRuntime = endTime - startTime;
         runtimeInMinutes = (totalRuntime / (1000 * 60)).toFixed(2);
-        throw new Error(`service: ${countProduct} products updated in the database,total time taken ${runtimeInMinutes} minutes.`);
+        throw new Error(`service: total time taken ${runtimeInMinutes} minutes.`);
     }
 }
+
+async function writewpDataToCSV(data, filename) {
+    const csvWriter = createCsvWriter({
+        path: filename,
+        alwaysQuote :true,
+        recordDelimiter: '\r\n',
+        header: [
+            { id: 'stylecode', title: 'Style Code' },
+            { id: 'color_name', title: 'Color Name' },
+            { id: 'colorcode', title: 'Color Code' },
+            { id: 'size', title: 'Size' },
+            { id: 'inventory', title: 'Inventory' },
+            { id: 'price', title: 'Price' },
+        ],
+    });
+
+    await csvWriter.writeRecords(data);
+    await uploadToFTP(filename);
+}
+
 
 // PRO CLUB
 
 async function processProClub(driver, is_update) {
+
     let productCollect = [];
-    const categories = [
-        'https://www.proclubinc.com/mens/?limit=100',
-        'https://www.proclubinc.com/womens/',
-        'https://www.proclubinc.com/youth/',
-        'https://www.proclubinc.com/accessories/'
-    ];
-
-    for (let category of categories) {
-        try {
-            await driver.get(category);
-            await driver.sleep(2000);
-            const productElements = await driver.findElements(By.css('.shop-item-summary'));
-            for (let product of productElements) {
-                const productName = await product.findElement(By.css('a')).getText();
-                const productUrl = await product.findElement(By.css('a')).getAttribute('href');
-                productCollect.push({
-                    productName: productName,
-                    productUrl: productUrl,
-                });
-            }
-            
-        } catch (error) {
-            console.log(error);
-            endTime = Date.now();
-            totalRuntime = endTime - startTime;
-            runtimeInMinutes = (totalRuntime / (1000 * 60)).toFixed(2);
-            throw new Error(`service: ${countProduct} products updated in the database,total time taken ${runtimeInMinutes} minutes.`);
-        }
-    }
-    console.log(`Total Products link: ${productCollect.length}`);
-
-    const productChunks = splitArrayIntoChunks(productCollect, 40);
-
-    for (let chunkIndex = 0; chunkIndex < productChunks.length; chunkIndex++) {
-        console.log(`Processing chunk ${chunkIndex + 1} of ${productChunks.length}...`);
-        const productChunk = productChunks[chunkIndex];
-
-        for(let product of productChunk){
-            let collectedData2 = [];
+    try {
+        const categories = [
+            'https://www.proclubinc.com/mens/?limit=100',
+            'https://www.proclubinc.com/womens/',
+            'https://www.proclubinc.com/youth/',
+            'https://www.proclubinc.com/accessories/'
+        ];
+    
+        for (let category of categories) {
             try {
-                await driver.get(product.productUrl);
+                await driver.get(category);
                 await driver.sleep(2000);
-                const htmlContent = await driver.getPageSource();
-                const $ = cheerio.load(htmlContent);
-
-                const style_code = $('.clearfix #div_product_itemno').text();
-
-                $('table').eq(0).find('tr:not(:eq(0))').each(function () {
-                    let colorname = $(this).find('.font-dark ').eq(1).text();
-        
-                    $(this).find('table').eq(0).find('tr').find('td').each(function () {
-                        let currentData = $(this).html();
-                        if(currentData.includes('&nbsp;')){
-                            return;
-                        } else {
-                            let price = $(this).find('.txt-default').html();
-                            price = parseFloat(price.replace('$', ''));
-                            let size = $(this).find('.MainQty').attr('placeholder');
-                            let qty = $(this).find('span').html();
-                            if (qty.includes('500+')) {
-                                qty = 500;
-                            } else if (qty == ''){
-                                qty = 0;
-                            }
-            
-                            collectedData2.push({
-                                product_name: product.productName,
-                                style_code: style_code,
-                                color: colorname,
-                                size: size,
-                                quantity: parseInt(qty),
-                                price: price,
-                                updated_by: updated_by,
-                            });
-                        }
+                const productElements = await driver.findElements(By.css('.shop-item-summary'));
+                for (let product of productElements) {
+                    const productName = await product.findElement(By.css('a')).getText();
+                    const productUrl = await product.findElement(By.css('a')).getAttribute('href');
+                    productCollect.push({
+                        productName: productName,
+                        productUrl: productUrl,
                     });
-                });
-                const query = `CALL sp_BatchUpdateProClubData(?)`;
-                await bulkInsert(collectedData2, 2000, query);
+                }
+                
             } catch (error) {
                 console.log(error);
-                console.log(`Error in Product Url: ${product.productUrl}`);
-                console.log(`Error while processing chunk ${chunkIndex + 1}: ${error.message}`);
                 endTime = Date.now();
                 totalRuntime = endTime - startTime;
                 runtimeInMinutes = (totalRuntime / (1000 * 60)).toFixed(2);
-                throw new Error(`service: ${countProduct} products updated in the database,total time taken ${runtimeInMinutes} minutes.`);
+                throw new Error(`service: total time taken ${runtimeInMinutes} minutes.`);
             }
         }
-        console.log(`Finished processing chunk ${chunkIndex + 1} of ${productChunks.length}.`);
-        await driver.sleep(10000);
-    }    
+        console.log(`Total Products link: ${productCollect.length}`);
+    
+        const productChunks = splitArrayIntoChunks(productCollect, 40);
+        let proClubData = [];
+    
+        for (let chunkIndex = 0; chunkIndex < productChunks.length; chunkIndex++) {
+            console.log(`Processing chunk ${chunkIndex + 1} of ${productChunks.length}...`);
+            const productChunk = productChunks[chunkIndex];
+    
+            for(let product of productChunk){
+                try {
+                    await driver.get(product.productUrl);
+                    await driver.sleep(2000);
+                    const htmlContent = await driver.getPageSource();
+                    const $ = cheerio.load(htmlContent);
+                    let styleNote = $('.alert-mini').text().trim();
+                    if(styleNote == ''){
+                        styleNote = 'No Style Note';
+                    }
+                    
+                    const style_code = $('.clearfix #div_product_itemno').text();
+    
+                    $('table').eq(0).find('tr:not(:eq(0))').each(function () {
+                        let colorname = $(this).find('.font-dark ').eq(1).text();
+            
+                        $(this).find('table').eq(0).find('tr').find('td').each(function () {
+                            let currentData = $(this).html();
+                            if(currentData.includes('&nbsp;')){
+                                return;
+                            } else {
+                                let price = $(this).find('.txt-default').html();
+                                price = parseFloat(price.replace('$', ''));
+                                let size = $(this).find('.MainQty').attr('placeholder');
+                                let qty = $(this).find('span').html();
+                                if (qty.includes('500+')) {
+                                    qty = 500;
+                                } else if (qty == ''){
+                                    qty = 0;
+                                }
+                                const prodUrl = product.productUrl;
+                                const styleName = product.productName;
+                                proClubData.push({
+                                    "StyleName": styleName,
+                                    "sku": style_code,
+                                    "colorname": colorname,
+                                    "price": price,
+                                    "size": size,
+                                    "qty": parseInt(qty),
+                                    "url": prodUrl,
+                                    "styleNote": styleNote,
+                                });
+                            }
+                        });
+                    });
+                } catch (error) {
+                    console.log(error);
+                    console.log(`Error in Product Url: ${product.productUrl}`);
+                    console.log(`Error while processing chunk ${chunkIndex + 1}: ${error.message}`);
+                    endTime = Date.now();
+                    totalRuntime = endTime - startTime;
+                    runtimeInMinutes = (totalRuntime / (1000 * 60)).toFixed(2);
+                    throw new Error(`service: total time taken ${runtimeInMinutes} minutes.`);
+                }
+            }
+            console.log(`Finished processing chunk ${chunkIndex + 1} of ${productChunks.length}.`);
+            await driver.sleep(10000);
+        }
+        
+        countProduct = proClubData.length;
+    
+        await writeProClubDataToCSV(proClubData, 'proclubInventory.csv');
+    
+        const conn = await getConnection2();
+        const result =  await conn.request()
+                        .execute('stp_proClub_inventory_grabber');
+        // console.log(result);
+    
+        endTime = Date.now();
+        totalRuntime = endTime - startTime;
+        runtimeInMinutes = (totalRuntime / (1000 * 60)).toFixed(2);
+    
+        new Notification({
+            title: 'Pro Club',
+            body: `${countProduct} products updated in the database,total time taken ${runtimeInMinutes} minutes.`,
+        }).show();
+
+    } catch (error) {
+        console.error(error);
+        endTime = Date.now();
+        totalRuntime = endTime - startTime;
+        runtimeInMinutes = (totalRuntime / (1000 * 60)).toFixed(2);
+        if (is_update == 1) {
+            throw new Error(`service: total time taken ${runtimeInMinutes} minutes.`);
+        } else {
+            throw new Error(`service: total time taken ${runtimeInMinutes} minutes.`);
+        }
+    }
+}
+
+async function writeProClubDataToCSV(data, filename) {
+    const csvWriter = createCsvWriter({
+        path: filename,
+        alwaysQuote :true,
+        recordDelimiter: '\r\n',
+        header: [
+            { id: 'StyleName', title: 'Product Name' },
+            { id: 'sku', title: 'Style Code' },
+            { id: 'colorname', title: 'Color Name' },
+            { id: 'price', title: 'Price' },
+            { id: 'size', title: 'Size' },
+            { id: 'qty', title: 'Quantity' },
+            { id: 'url', title: 'Product URL' },
+            { id: 'styleNote', title: 'Style Note' },
+        ],
+    });
+
+    await csvWriter.writeRecords(data);
+    await uploadToFTP(filename);
 }
 
 
@@ -744,6 +853,35 @@ function splitArrayIntoChunks(array, chunkSize) {
         chunks.push(array.slice(i, i + chunkSize));
     }
     return chunks;
+}
+
+// ------- Uploading CSV File To FTP Server ------- //
+
+async function uploadToFTP(localFilePath) {
+    const client = new ftp.Client();
+    client.ftp.verbose = true;
+
+    try {
+        await client.access({
+            host: "74.208.31.179",
+            user: "server_FTP",
+            password: "JGunz4#c-5B9ZWJc@",
+            port: 21,
+            secure: false
+        });
+
+        await client.ensureDir("Inventory Files");
+
+        const fileName = path.basename(localFilePath);
+
+        await client.uploadFrom(localFilePath, fileName);
+
+        console.log(`Uploaded ${fileName} to FTP server in "Inventory Files" folder.`);
+    } catch (err) {
+        console.error("FTP upload failed:", err);
+    } finally {
+        client.close();
+    }
 }
 
 

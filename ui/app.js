@@ -31,7 +31,7 @@ async function vendors() {
     try {
         const vendors = await window.electron.getVendors();
         const uName = await window.electron.getUserName();
-        userName.innerText = `Welcome ${uName}`;
+        userName.innerText = `Welcome ${uName} to Scraping Window`;
 
         vendors.forEach(vendor => {
             const buttonWrapper = document.createElement('div');
@@ -105,7 +105,7 @@ async function updateVendors() {
                 button.innerHTML = "Please Wait...";
                 disableButtons();
 
-                showText.innerText = `Update Inventory In Process For ${vendor.vendor_name}`;
+                showText.innerText = `Updating the Inventory for the Vendor ${vendor.vendor_name}`;
                 try {
                     const { postLoginPage, cookies, countProduct, runtimeInMinutes } = await window.electron.loginAndPost(vendor.id, is_update);
                     await window.electron.setCookiesAndOpen({ cookies, postLoginPage });
@@ -140,9 +140,10 @@ async function updateVendors() {
         console.log(error);
         if (error.message.includes('connection')) {
             showText.innerText = `Database connection is unavailable`;
-        } 
-        else if (error.message.includes('database')) {
+        } else if (error.message.includes('database')) {
             showText.innerText = `Update Inventory Vendors data not found`;
+        } else if (error.message.includes('Failed to connect')){
+            showText.innerText = `Database connection is unavailable Check your network and try again.`;
         }
     }
 }
