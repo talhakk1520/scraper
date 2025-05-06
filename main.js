@@ -2,6 +2,7 @@ const { app, BrowserWindow, session, ipcMain, Notification } = require('electron
 const  { getConnection1, sql, getConnection2 } = require('./database');
 const { Builder, By} = require('selenium-webdriver');
 const firefox = require('selenium-webdriver/firefox');
+const chrome = require('selenium-webdriver/chrome');
 const createCsvWriter = require('csv-writer').createObjectCsvWriter;
 const ftp = require('basic-ftp');
 const Store = require('electron-store');
@@ -160,6 +161,14 @@ ipcMain.handle('loginAndPost', async (event, vendorId, is_update) => {
             .forBrowser('firefox')
             .setFirefoxOptions(options)
             .build();
+
+        // const options = new chrome.Options();
+        // options.addArguments('--headless');
+
+        // driver = await new Builder()
+        //     .forBrowser('chrome')
+        //     .setChromeOptions(options)
+        //     .build();
 
         try {
             await driver.get(link);
