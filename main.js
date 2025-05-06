@@ -154,7 +154,7 @@ ipcMain.handle('loginAndPost', async (event, vendorId, is_update) => {
         const { vendor_name, link, email, password, is_type_vpn, is_label, not_type_submit} = vendorDetails[0];  
 
         const options = new firefox.Options();
-        // options.addArguments('--headless');
+        options.addArguments('--headless');
 
         driver = await new Builder()
             .forBrowser('firefox')
